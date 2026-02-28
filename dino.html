@@ -63,10 +63,17 @@
     const GRAVITY    = 0.6;
     const JUMP_FORCE = -13;
 
+    const POWERUP_INFO = {
+      shield: { color: '#4ecca3', label: 'SHIELD',   duration: 300 },
+      slow:   { color: '#a855f7', label: 'SLOW-MO',  duration: 300 },
+      lowg:   { color: '#f1c40f', label: 'LOW GRAV', duration: 360 },
+    };
+
     let gameState = 'idle'; // 'idle' | 'running' | 'over'
     let score, best, gameSpeed;
     let dinoY, velocityY, onGround, legFrame, legTimer;
     let obstacles, spawnTimer, spawnInterval;
+    let powerups, activePowerup, powerupFrames, powerupTotal, canDoubleJump, powerupCountdown;
     let rafId = null;
 
     best = parseInt(localStorage.getItem('dinoBest') || '0');
@@ -85,6 +92,8 @@
       obstacles    = [];
       spawnTimer   = 0;
       spawnInterval = 90;
+      powerups = []; activePowerup = null; powerupFrames = 0;
+      powerupTotal = 0; canDoubleJump = false; powerupCountdown = 320;
 
       document.getElementById('score').textContent = 0;
       setMessage('');
@@ -105,7 +114,7 @@
 
     function tick() {
       // Dino physics
-      velocityY += GRAVITY;
+      velocityY += (activePowerup === 'lowg') ? 0.18 : GRAVITY;
       dinoY += velocityY;
       if (dinoY >= GROUND_Y - DINO_H) {
         dinoY     = GROUND_Y - DINO_H;
@@ -137,30 +146,63 @@
         spawnObstacle();
       }
 
+      // Spawn power-up countdown
+      if (--powerupCountdown <= 0) {
+        powerupCountdown = 280 + Math.floor(Math.random() * 140);
+        spawnPowerup();
+      }
+
+      // Effective speed (SLOW-MO power-up)
+      const spd = (activePowerup === 'slow') ? gameSpeed * 0.45 : gameSpeed;
+
       // Move & prune obstacles
       for (let i = obstacles.length - 1; i >= 0; i--) {
         const ob = obstacles[i];
         if (ob.type === 'tumbleweed') {
-          ob.x        -= gameSpeed * 1.2;
+          ob.x        -= spd * 1.2;
           ob.rotation += 0.08;
         } else {
-          ob.x -= gameSpeed;
+          ob.x -= spd;
         }
         if (ob.x + ob.w < 0) obstacles.splice(i, 1);
       }
 
-      // Collision — AABB with 5px inset on dino
-      const dx = DINO_X + 5, dy = dinoY + 5, dw = 45, dh = 55;
-      for (const ob of obstacles) {
-        let bx, by, bw, bh;
-        if (ob.type === 'tumbleweed') {
-          const cy = GROUND_Y - ob.r + Math.sin(ob.x * 0.05) * 8;
-          bx = ob.x + 5; by = cy - ob.r + 5; bw = ob.r * 2 - 10; bh = ob.r * 2 - 10;
-        } else {
-          bx = ob.x + 5; by = ob.y + 5; bw = ob.w - 10; bh = ob.h - 10;
+      // Move & prune power-up orbs
+      for (let i = powerups.length - 1; i >= 0; i--) {
+        powerups[i].x -= spd;
+        if (powerups[i].x + powerups[i].r * 2 < 0) powerups.splice(i, 1);
+      }
+
+      // Collect power-ups
+      const pdx = DINO_X + 5, pdy = dinoY + 5, pdw = 45, pdh = 55;
+      for (let i = powerups.length - 1; i >= 0; i--) {
+        const p = powerups[i];
+        if (pdx < p.x + p.r*2 && pdx+pdw > p.x && pdy < p.y + p.r*2 && pdy+pdh > p.y) {
+          activePowerup = p.type;
+          powerupFrames = POWERUP_INFO[p.type].duration;
+          powerupTotal  = powerupFrames;
+          canDoubleJump = false;
+          powerups.splice(i, 1); break;
         }
-        if (dx < bx + bw && dx + dw > bx && dy < by + bh && dy + dh > by) {
-          endGame(); return;
+      }
+
+      // Tick active power-up
+      if (activePowerup && --powerupFrames <= 0) activePowerup = null;
+
+      // Collision — AABB with 5px inset on dino
+      if (activePowerup !== 'shield') {
+        const dx = DINO_X + 5, dy = dinoY + 5, dw = 45, dh = 55;
+        for (const ob of obstacles) {
+          let bx, by, bw, bh;
+          if (ob.type === 'tumbleweed') {
+            const cy = GROUND_Y - ob.r + Math.sin(ob.x * 0.05) * 8;
+            bx = ob.x + 5; by = cy - ob.r + 5; bw = ob.r * 2 - 10; bh = ob.r * 2 - 10;
+          } else {
+            bx = ob.x + 5; by = ob.y + 5; bw = ob.w - 10; bh = ob.h - 10;
+          }
+          if (dx < bx + bw && dx + dw > bx && dy < by + bh && dy + dh > by) {
+            endGame(); return;
+          }
         }
       }
     }
@@ -181,6 +223,13 @@
       }
     }
 
+    function spawnPowerup() {
+      const types = ['shield', 'slow', 'lowg'];
+      const type  = types[Math.floor(Math.random() * types.length)];
+      const y     = GROUND_Y - 55 - Math.floor(Math.random() * 65);
+      powerups.push({ type, x: canvas.width + 10, y, r: 16 });
+    }
+
     function endGame() {
       gameState = 'over';
       cancelAnimationFrame(rafId);
@@ -199,6 +248,8 @@
         else drawTumbleweed(ob);
       }
       drawDino();
+      drawPowerupOrbs();
+      drawActivePowerupHUD();
       if (gameState === 'idle') drawOverlay('DINO HOP', 'Press SPACE or \u2191 to start');
       if (gameState === 'over') drawOverlay('GAME OVER', `Score: ${score}   Press Space to restart`);
     }
@@ -243,6 +294,12 @@
     function drawDino() {
       const x = DINO_X;
       const y = dinoY; // top of overall figure; feet at y + DINO_H = GROUND_Y
+
+      // Power-up glow aura
+      if (activePowerup) {
+        ctx.shadowBlur  = 20;
+        ctx.shadowColor = POWERUP_INFO[activePowerup].color;
+      }
 
       // Tail — triangle pointing left
       ctx.fillStyle = '#3a9d5c';
@@ -311,6 +368,8 @@
         ctx.fillRect(x + 27, y + 44, 10, 10);
         ctx.fillRect(x + 25, y + 51, 14, 4);
       }
+
+      ctx.shadowBlur = 0;
     }
 
     function drawCactus(ob) {
@@ -394,6 +453,80 @@
       ctx.restore();
     }
 
+    function drawPowerupOrbs() {
+      if (!powerups || powerups.length === 0) return;
+      const letters = { shield: 'S', slow: 'P', lowg: 'G' };
+      powerups.forEach((p, i) => {
+        const { color } = POWERUP_INFO[p.type];
+        const bob = Math.sin(Date.now() / 350 + i * 1.5) * 5;
+        const cx = p.x + p.r;
+        const cy = p.y + p.r + bob;
+
+        ctx.save();
+        ctx.shadowBlur  = 18;
+        ctx.shadowColor = color;
+
+        // Orb fill
+        const grad = ctx.createRadialGradient(cx - p.r * 0.3, cy - p.r * 0.3, 1, cx, cy, p.r);
+        grad.addColorStop(0, 'rgba(255,255,255,0.6)');
+        grad.addColorStop(0.4, color + 'cc');
+        grad.addColorStop(1, color + '88');
+        ctx.fillStyle = grad;
+        ctx.beginPath();
+        ctx.arc(cx, cy, p.r, 0, Math.PI * 2);
+        ctx.fill();
+
+        // Ring
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.arc(cx, cy, p.r, 0, Math.PI * 2);
+        ctx.stroke();
+
+        // Letter
+        ctx.shadowBlur = 0;
+        ctx.fillStyle = '#fff';
+        ctx.font = 'bold 13px Courier New';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(letters[p.type], cx, cy);
+
+        ctx.restore();
+      });
+      ctx.textBaseline = 'alphabetic';
+    }
+
+    function drawActivePowerupHUD() {
+      if (!activePowerup) return;
+      const { color, label } = POWERUP_INFO[activePowerup];
+      const barMaxW = 120;
+      const barW    = barMaxW * (powerupFrames / powerupTotal);
+      const rx = canvas.width - 20 - barMaxW;
+      const ry = 12;
+
+      ctx.save();
+      // Label
+      ctx.fillStyle = color;
+      ctx.font = 'bold 11px Courier New';
+      ctx.textAlign = 'right';
+      ctx.fillText(label, canvas.width - 20, ry + 10);
+
+      // Background bar
+      ctx.fillStyle = 'rgba(0,0,0,0.4)';
+      ctx.beginPath();
+      ctx.roundRect(rx, ry + 14, barMaxW, 7, 3);
+      ctx.fill();
+
+      // Filled bar
+      ctx.shadowBlur  = 8;
+      ctx.shadowColor = color;
+      ctx.fillStyle   = color;
+      ctx.beginPath();
+      ctx.roundRect(rx, ry + 14, barW, 7, 3);
+      ctx.fill();
+      ctx.restore();
+    }
+
     function drawOverlay(title, subtitle) {
       ctx.fillStyle = 'rgba(0,0,0,0.42)';
       ctx.fillRect(0, 0, canvas.width, canvas.height);
@@ -426,8 +559,12 @@
       }
 
       if (jump && onGround) {
-        velocityY = JUMP_FORCE;
-        onGround  = false;
+        velocityY     = JUMP_FORCE;
+        onGround      = false;
+        canDoubleJump = (activePowerup === 'lowg');
+      } else if (jump && !onGround && canDoubleJump) {
+        velocityY     = JUMP_FORCE * 0.85;
+        canDoubleJump = false;
       }
     });
 
@@ -439,6 +576,8 @@
     legFrame  = 0;
     legTimer  = 0;
     obstacles = [];
+    powerups = []; activePowerup = null; powerupFrames = 0;
+    powerupTotal = 0; canDoubleJump = false; powerupCountdown = 320;
     draw();
   </script>
 </body>
