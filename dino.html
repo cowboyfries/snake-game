@@ -1,0 +1,445 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Dino Hop</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      background: #1a1a2e;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      height: 100vh;
+      font-family: 'Courier New', monospace;
+      color: #eee;
+    }
+    h1 {
+      font-size: 2rem;
+      margin-bottom: 12px;
+      color: #4ecca3;
+      letter-spacing: 4px;
+      text-transform: uppercase;
+    }
+    #scoreboard {
+      display: flex;
+      gap: 40px;
+      margin-bottom: 16px;
+      font-size: 1rem;
+      letter-spacing: 2px;
+    }
+    #scoreboard span { color: #4ecca3; font-weight: bold; }
+    canvas {
+      border: 2px solid #4ecca3;
+      border-radius: 4px;
+      box-shadow: 0 0 30px rgba(78,204,163,0.3);
+    }
+    #message {
+      margin-top: 18px;
+      font-size: 1rem;
+      color: #aaa;
+      letter-spacing: 1px;
+      min-height: 1.4em;
+    }
+    #message.highlight { color: #4ecca3; font-size: 1.2rem; }
+  </style>
+</head>
+<body>
+  <h1>Dino Hop</h1>
+  <div id="scoreboard">
+    SCORE: <span id="score">0</span> &nbsp;&nbsp; BEST: <span id="best">0</span>
+  </div>
+  <canvas id="canvas" width="800" height="300"></canvas>
+  <div id="message">Press <b>Space</b> or <b>&#8593;</b> to start</div>
+
+  <script>
+    const canvas = document.getElementById('canvas');
+    const ctx = canvas.getContext('2d');
+
+    const GROUND_Y   = 240;   // y coordinate of ground line
+    const DINO_X     = 100;   // fixed horizontal position
+    const DINO_H     = 65;    // total dino figure height (bottom = GROUND_Y)
+    const GRAVITY    = 0.6;
+    const JUMP_FORCE = -13;
+
+    let gameState = 'idle'; // 'idle' | 'running' | 'over'
+    let score, best, gameSpeed;
+    let dinoY, velocityY, onGround, legFrame, legTimer;
+    let obstacles, spawnTimer, spawnInterval;
+    let rafId = null;
+
+    best = parseInt(localStorage.getItem('dinoBest') || '0');
+    document.getElementById('best').textContent = best;
+
+    // ── Init ──────────────────────────────────────────────────────────────────
+
+    function initGame() {
+      score        = 0;
+      gameSpeed    = 5;
+      dinoY        = GROUND_Y - DINO_H;
+      velocityY    = 0;
+      onGround     = true;
+      legFrame     = 0;
+      legTimer     = 0;
+      obstacles    = [];
+      spawnTimer   = 0;
+      spawnInterval = 90;
+
+      document.getElementById('score').textContent = 0;
+      setMessage('');
+      gameState = 'running';
+
+      if (rafId) cancelAnimationFrame(rafId);
+      rafId = requestAnimationFrame(loop);
+    }
+
+    // ── Game loop ─────────────────────────────────────────────────────────────
+
+    function loop() {
+      if (gameState !== 'running') return;
+      tick();
+      draw();
+      rafId = requestAnimationFrame(loop);
+    }
+
+    function tick() {
+      // Dino physics
+      velocityY += GRAVITY;
+      dinoY += velocityY;
+      if (dinoY >= GROUND_Y - DINO_H) {
+        dinoY     = GROUND_Y - DINO_H;
+        velocityY = 0;
+        onGround  = true;
+      }
+
+      // Leg animation (only meaningful while visible; runs every frame)
+      if (++legTimer >= 8) { legTimer = 0; legFrame ^= 1; }
+
+      // Score
+      score++;
+      document.getElementById('score').textContent = score;
+      if (score > best) {
+        best = score;
+        localStorage.setItem('dinoBest', best);
+        document.getElementById('best').textContent = best;
+      }
+
+      // Speed scaling every 200 points
+      if (score % 200 === 0) {
+        gameSpeed     = Math.min(14, gameSpeed + 0.5);
+        spawnInterval = Math.max(45, spawnInterval - 4);
+      }
+
+      // Spawn obstacles
+      if (++spawnTimer >= spawnInterval) {
+        spawnTimer = 0;
+        spawnObstacle();
+      }
+
+      // Move & prune obstacles
+      for (let i = obstacles.length - 1; i >= 0; i--) {
+        const ob = obstacles[i];
+        if (ob.type === 'tumbleweed') {
+          ob.x        -= gameSpeed * 1.2;
+          ob.rotation += 0.08;
+        } else {
+          ob.x -= gameSpeed;
+        }
+        if (ob.x + ob.w < 0) obstacles.splice(i, 1);
+      }
+
+      // Collision — AABB with 5px inset on dino
+      const dx = DINO_X + 5, dy = dinoY + 5, dw = 45, dh = 55;
+      for (const ob of obstacles) {
+        let bx, by, bw, bh;
+        if (ob.type === 'tumbleweed') {
+          const cy = GROUND_Y - ob.r + Math.sin(ob.x * 0.05) * 8;
+          bx = ob.x + 5; by = cy - ob.r + 5; bw = ob.r * 2 - 10; bh = ob.r * 2 - 10;
+        } else {
+          bx = ob.x + 5; by = ob.y + 5; bw = ob.w - 10; bh = ob.h - 10;
+        }
+        if (dx < bx + bw && dx + dw > bx && dy < by + bh && dy + dh > by) {
+          endGame(); return;
+        }
+      }
+    }
+
+    function spawnObstacle() {
+      if (Math.random() < 0.38) {
+        // Tumbleweed
+        const r = 18 + Math.floor(Math.random() * 6);
+        obstacles.push({ type: 'tumbleweed', x: canvas.width + 10, w: r * 2, r, rotation: 0 });
+      } else {
+        // Cactus: 0 = small, 1 = tall, 2 = double
+        const variant = Math.floor(Math.random() * 3);
+        let w, h;
+        if (variant === 0) { w = 22; h = 38; }
+        else if (variant === 1) { w = 22; h = 58; }
+        else { w = 50; h = 52; }
+        obstacles.push({ type: 'cactus', x: canvas.width + 10, y: GROUND_Y - h, w, h, variant });
+      }
+    }
+
+    function endGame() {
+      gameState = 'over';
+      cancelAnimationFrame(rafId);
+      draw();
+      setMessage('GAME OVER &mdash; Press Space to restart', true);
+    }
+
+    // ── Drawing ───────────────────────────────────────────────────────────────
+
+    function draw() {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      drawSky();
+      drawGround();
+      for (const ob of obstacles) {
+        if (ob.type === 'cactus') drawCactus(ob);
+        else drawTumbleweed(ob);
+      }
+      drawDino();
+      if (gameState === 'idle') drawOverlay('DINO HOP', 'Press SPACE or \u2191 to start');
+      if (gameState === 'over') drawOverlay('GAME OVER', `Score: ${score}   Press Space to restart`);
+    }
+
+    function drawSky() {
+      const grad = ctx.createLinearGradient(0, 0, 0, GROUND_Y);
+      grad.addColorStop(0, '#87ceeb');
+      grad.addColorStop(1, '#f5deb3');
+      ctx.fillStyle = grad;
+      ctx.fillRect(0, 0, canvas.width, GROUND_Y);
+
+      // Distant hills silhouette
+      ctx.fillStyle = 'rgba(180,160,100,0.4)';
+      ctx.beginPath();
+      ctx.moveTo(0, GROUND_Y);
+      for (let x = 0; x <= canvas.width; x += 80) {
+        ctx.quadraticCurveTo(x + 40, GROUND_Y - 25, x + 80, GROUND_Y);
+      }
+      ctx.closePath();
+      ctx.fill();
+    }
+
+    function drawGround() {
+      // Sandy ground fill
+      ctx.fillStyle = '#c8a96e';
+      ctx.fillRect(0, GROUND_Y, canvas.width, canvas.height - GROUND_Y);
+      // Ground line
+      ctx.strokeStyle = '#8b7355';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(0, GROUND_Y);
+      ctx.lineTo(canvas.width, GROUND_Y);
+      ctx.stroke();
+      // Subtle pebble dots
+      ctx.fillStyle = 'rgba(100,70,30,0.3)';
+      for (let x = 15; x < canvas.width; x += 55) {
+        ctx.beginPath(); ctx.arc(x,       GROUND_Y + 8,  2,   0, Math.PI * 2); ctx.fill();
+        ctx.beginPath(); ctx.arc(x + 28,  GROUND_Y + 16, 1.5, 0, Math.PI * 2); ctx.fill();
+      }
+    }
+
+    function drawDino() {
+      const x = DINO_X;
+      const y = dinoY; // top of overall figure; feet at y + DINO_H = GROUND_Y
+
+      // Tail — triangle pointing left
+      ctx.fillStyle = '#3a9d5c';
+      ctx.beginPath();
+      ctx.moveTo(x + 2, y + 18);
+      ctx.lineTo(x - 16, y + 28);
+      ctx.lineTo(x + 2, y + 38);
+      ctx.closePath();
+      ctx.fill();
+
+      // Body
+      ctx.fillStyle = '#4caf74';
+      ctx.beginPath();
+      ctx.roundRect(x, y + 10, 50, 40, 6);
+      ctx.fill();
+
+      // Neck
+      ctx.fillStyle = '#4caf74';
+      ctx.beginPath();
+      ctx.roundRect(x + 36, y + 2, 16, 22, 4);
+      ctx.fill();
+
+      // Head
+      ctx.fillStyle = '#5bc87e';
+      ctx.beginPath();
+      ctx.roundRect(x + 30, y - 8, 30, 22, 5);
+      ctx.fill();
+
+      // Lower jaw / mouth slit
+      ctx.fillStyle = '#3a9d5c';
+      ctx.fillRect(x + 54, y + 8, 6, 3);
+
+      // Eye — white
+      ctx.fillStyle = 'white';
+      ctx.beginPath();
+      ctx.arc(x + 47, y - 1, 4.5, 0, Math.PI * 2);
+      ctx.fill();
+      // Pupil
+      ctx.fillStyle = '#1a1a2e';
+      ctx.beginPath();
+      ctx.arc(x + 48, y, 2.5, 0, Math.PI * 2);
+      ctx.fill();
+      // Eye shine
+      ctx.fillStyle = 'rgba(255,255,255,0.7)';
+      ctx.beginPath();
+      ctx.arc(x + 46, y - 2, 1.2, 0, Math.PI * 2);
+      ctx.fill();
+
+      // Legs
+      ctx.fillStyle = '#3a9d5c';
+      const legBottom = y + DINO_H; // = GROUND_Y when on ground
+      if (onGround) {
+        // Alternating stride
+        const l1top = legBottom - (legFrame === 0 ? 18 : 12);
+        const l2top = legBottom - (legFrame === 0 ? 12 : 18);
+        // Left leg
+        ctx.fillRect(x + 9,  l1top, 10, legBottom - l1top);
+        ctx.fillRect(x + 7,  legBottom - 4, 14, 4); // foot
+        // Right leg
+        ctx.fillRect(x + 27, l2top, 10, legBottom - l2top);
+        ctx.fillRect(x + 25, legBottom - 4, 14, 4); // foot
+      } else {
+        // Airborne — legs tucked back
+        ctx.fillRect(x + 9,  y + 46, 10, 12);
+        ctx.fillRect(x + 7,  y + 55, 14, 4);
+        ctx.fillRect(x + 27, y + 44, 10, 10);
+        ctx.fillRect(x + 25, y + 51, 14, 4);
+      }
+    }
+
+    function drawCactus(ob) {
+      const { x, y, w, h, variant } = ob;
+      ctx.fillStyle = '#2d8a3e';
+
+      if (variant === 2) {
+        // Double cactus
+        drawSingleCactus(x,      y + 14, 20, 38);
+        drawSingleCactus(x + 30, y,      20, 52);
+      } else {
+        drawSingleCactus(x, y, w, h);
+      }
+    }
+
+    function drawSingleCactus(x, y, w, h) {
+      ctx.fillStyle = '#2d8a3e';
+      // Trunk
+      ctx.beginPath();
+      ctx.roundRect(x + w * 0.3, y, w * 0.4, h, 3);
+      ctx.fill();
+
+      // Left arm
+      if (h >= 35) {
+        const ay = y + h * 0.38;
+        ctx.beginPath(); ctx.roundRect(x, ay - 4, w * 0.33, 9, 3); ctx.fill();      // horizontal
+        ctx.beginPath(); ctx.roundRect(x, ay - 4 - 14, 9, 16, 3); ctx.fill();       // vertical tip
+      }
+
+      // Right arm (only on taller variants)
+      if (h >= 50) {
+        const ay = y + h * 0.52;
+        ctx.beginPath(); ctx.roundRect(x + w * 0.67, ay - 4, w * 0.33, 9, 3); ctx.fill();
+        ctx.beginPath(); ctx.roundRect(x + w - 9, ay - 4 - 12, 9, 14, 3); ctx.fill();
+      }
+    }
+
+    function drawTumbleweed(ob) {
+      const r  = ob.r;
+      const cx = ob.x + r;
+      const cy = GROUND_Y - r + Math.sin(ob.x * 0.05) * 8; // bouncing center y
+
+      ctx.save();
+      ctx.translate(cx, cy);
+      ctx.rotate(ob.rotation);
+
+      // Fill
+      ctx.fillStyle = 'rgba(160,100,40,0.2)';
+      ctx.beginPath();
+      ctx.arc(0, 0, r, 0, Math.PI * 2);
+      ctx.fill();
+
+      // Outer ring
+      ctx.strokeStyle = '#9b6a2f';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.arc(0, 0, r, 0, Math.PI * 2);
+      ctx.stroke();
+
+      // 4 crossing lines through center
+      ctx.strokeStyle = '#7a5020';
+      ctx.lineWidth = 1.5;
+      for (let a = 0; a < 4; a++) {
+        const angle = (a / 4) * Math.PI;
+        ctx.beginPath();
+        ctx.moveTo(Math.cos(angle) * r * 0.88, Math.sin(angle) * r * 0.88);
+        ctx.lineTo(-Math.cos(angle) * r * 0.88, -Math.sin(angle) * r * 0.88);
+        ctx.stroke();
+      }
+
+      // Curved branch arcs
+      ctx.strokeStyle = '#9b6a2f';
+      ctx.lineWidth = 1;
+      for (let a = 0; a < 6; a++) {
+        const start = (a / 6) * Math.PI * 2;
+        ctx.beginPath();
+        ctx.arc(0, 0, r * 0.55, start, start + Math.PI / 4);
+        ctx.stroke();
+      }
+
+      ctx.restore();
+    }
+
+    function drawOverlay(title, subtitle) {
+      ctx.fillStyle = 'rgba(0,0,0,0.42)';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+      ctx.textAlign = 'center';
+      ctx.fillStyle = '#4ecca3';
+      ctx.font = 'bold 34px Courier New';
+      ctx.fillText(title, canvas.width / 2, canvas.height / 2 - 18);
+
+      ctx.fillStyle = '#eee';
+      ctx.font = '16px Courier New';
+      ctx.fillText(subtitle, canvas.width / 2, canvas.height / 2 + 18);
+    }
+
+    function setMessage(text, highlight = false) {
+      const el = document.getElementById('message');
+      el.innerHTML = text || 'Press <b>Space</b> or <b>&#8593;</b> to start';
+      el.className = highlight ? 'highlight' : '';
+    }
+
+    // ── Input ─────────────────────────────────────────────────────────────────
+
+    document.addEventListener('keydown', e => {
+      const jump = e.code === 'Space' || e.code === 'ArrowUp' || e.code === 'KeyW';
+      if (jump) e.preventDefault();
+
+      if (gameState !== 'running') {
+        if (jump) initGame();
+        return;
+      }
+
+      if (jump && onGround) {
+        velocityY = JUMP_FORCE;
+        onGround  = false;
+      }
+    });
+
+    // ── Idle draw ─────────────────────────────────────────────────────────────
+
+    dinoY     = GROUND_Y - DINO_H;
+    velocityY = 0;
+    onGround  = true;
+    legFrame  = 0;
+    legTimer  = 0;
+    obstacles = [];
+    draw();
+  </script>
+</body>
+</html>
