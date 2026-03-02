@@ -86,7 +86,7 @@ typings/
 .webpack/
 
 # Vite
-.vite/
+# Note: .vite/ is NOT ignored because Electron Forge needs it for packaging
 
 # Electron-Forge
 out/

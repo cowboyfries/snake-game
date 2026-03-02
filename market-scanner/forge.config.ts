@@ -12,12 +12,19 @@ const config: ForgeConfig = {
     asar: {
       unpack: '*.{node,dll}',
     },
+    icon: './src/assets/icon',
+    name: 'MarketScanner',
+    executableName: 'MarketScanner',
   },
   rebuildConfig: {
     force: true,
   },
   makers: [
-    new MakerSquirrel({}),
+    new MakerSquirrel({
+      setupIcon: './src/assets/icon.ico',
+      iconUrl: 'file:///src/assets/icon.ico',
+      name: 'MarketScanner',
+    }),
     new MakerZIP({}, ['darwin']),
     new MakerRpm({}),
     new MakerDeb({}),
