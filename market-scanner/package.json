@@ -28,7 +28,6 @@
     "@electron-forge/plugin-fuses": "^7.11.1",
     "@electron-forge/plugin-vite": "^7.11.1",
     "@electron/fuses": "^1.8.0",
-    "@types/better-sqlite3": "^7.6.13",
     "@types/electron-squirrel-startup": "^1.0.2",
     "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.3",
@@ -42,12 +41,12 @@
     "vite": "^5.4.21"
   },
   "dependencies": {
-    "better-sqlite3": "^12.6.2",
     "electron-squirrel-startup": "^1.0.1",
     "react": "^19.2.4",
     "react-dom": "^19.2.4",
     "react-router-dom": "^7.13.1",
     "recharts": "^3.7.0",
+    "sql.js": "^1.14.0",
     "technicalindicators": "^3.1.0",
     "yahoo-finance2": "^3.13.1"
   }

@@ -1,7 +1,7 @@
 import { app, BrowserWindow, shell } from 'electron';
 import path from 'node:path';
 import started from 'electron-squirrel-startup';
-import { getDatabase, closeDatabase } from './db/database';
+import { initDb, getDatabase, closeDatabase } from './db/database';
 import { registerMarketHandlers } from './ipc/market';
 import { registerSentimentHandlers } from './ipc/sentiment';
 import { registerNewsHandlers } from './ipc/news';
@@ -87,9 +87,9 @@ async function pushPriceUpdates(): Promise<void> {
   } catch { /* skip */ }
 }
 
-app.whenReady().then(() => {
-  // Initialize database
-  getDatabase();
+app.whenReady().then(async () => {
+  // Initialize database (async for sql.js WASM loading)
+  await initDb();
 
   // Register all IPC handlers
   registerMarketHandlers();
