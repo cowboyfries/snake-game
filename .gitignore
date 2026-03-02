@@ -8,3 +8,10 @@ Thumbs.db
 
 # Logs
 *.log
+
+# Market Scanner
+market-scanner/node_modules/
+market-scanner/dist/
+market-scanner/out/
+market-scanner/.vite/
+market-scanner/*.db
