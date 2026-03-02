@@ -1,140 +1,113 @@
-import initSqlJs, { type Database as SqlJsDatabase } from 'sql.js';
+import { LowSync } from 'lowdb';
+import { JSONFileSync } from 'lowdb/node';
 import { app } from 'electron';
 import path from 'node:path';
 import fs from 'node:fs';
-import { CREATE_TABLES } from './schema';
 
-// Wrapper that mimics the better-sqlite3 API using sql.js (WASM-based SQLite)
-class StatementWrapper {
-  constructor(
-    private db: SqlJsDatabase,
-    private sql: string,
-    private onMutate: () => void,
-  ) {}
-
-  run(...params: any[]): { lastInsertRowid: number; changes: number } {
-    this.db.run(this.sql, params);
-    this.onMutate();
-    const res = this.db.exec('SELECT last_insert_rowid() as id');
-    return {
-      lastInsertRowid: res.length > 0 ? Number(res[0].values[0][0]) : 0,
-      changes: this.db.getRowsModified(),
-    };
-  }
-
-  get(...params: any[]): any {
-    const stmt = this.db.prepare(this.sql);
-    if (params.length > 0) stmt.bind(params);
-    let result: any = undefined;
-    if (stmt.step()) {
-      result = stmt.getAsObject();
-    }
-    stmt.free();
-    return result;
-  }
-
-  all(...params: any[]): any[] {
-    const stmt = this.db.prepare(this.sql);
-    if (params.length > 0) stmt.bind(params);
-    const results: any[] = [];
-    while (stmt.step()) {
-      results.push(stmt.getAsObject());
-    }
-    stmt.free();
-    return results;
-  }
+// Schema for each "table" stored as arrays in JSON
+export interface PriceCacheEntry {
+  symbol: string;
+  type: string;
+  data: string;
+  timestamp: number;
 }
 
-class DatabaseWrapper {
-  private saveTimer: ReturnType<typeof setTimeout> | null = null;
-
-  constructor(
-    private db: SqlJsDatabase,
-    private dbPath: string,
-  ) {}
-
-  private scheduleSave(): void {
-    if (this.saveTimer) clearTimeout(this.saveTimer);
-    this.saveTimer = setTimeout(() => this.saveToDisk(), 500);
-  }
-
-  private saveToDisk(): void {
-    try {
-      const data = this.db.export();
-      const dir = path.dirname(this.dbPath);
-      if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-      fs.writeFileSync(this.dbPath, Buffer.from(data));
-    } catch {
-      // Ignore save errors during shutdown
-    }
-  }
-
-  exec(sql: string): void {
-    this.db.exec(sql);
-    this.scheduleSave();
-  }
-
-  prepare(sql: string): StatementWrapper {
-    return new StatementWrapper(this.db, sql, () => this.scheduleSave());
-  }
-
-  transaction<T>(fn: () => T): () => T {
-    return () => {
-      this.db.exec('BEGIN TRANSACTION');
-      try {
-        const result = fn();
-        this.db.exec('COMMIT');
-        this.scheduleSave();
-        return result;
-      } catch (err) {
-        this.db.exec('ROLLBACK');
-        throw err;
-      }
-    };
-  }
-
-  pragma(pragma: string): void {
-    this.db.exec(`PRAGMA ${pragma}`);
-  }
-
-  close(): void {
-    if (this.saveTimer) {
-      clearTimeout(this.saveTimer);
-    }
-    this.saveToDisk();
-    this.db.close();
-  }
+export interface HistoricalCacheEntry {
+  symbol: string;
+  type: string;
+  days: number;
+  data: string;
+  timestamp: number;
 }
 
-let db: DatabaseWrapper | null = null;
-let initPromise: Promise<DatabaseWrapper> | null = null;
-
-async function createDatabase(): Promise<DatabaseWrapper> {
-  const SQL = await initSqlJs();
-  const dbPath = path.join(app.getPath('userData'), 'market-scanner.db');
-
-  let sqlDb: SqlJsDatabase;
-  if (fs.existsSync(dbPath)) {
-    const fileBuffer = fs.readFileSync(dbPath);
-    sqlDb = new SQL.Database(fileBuffer);
-  } else {
-    sqlDb = new SQL.Database();
-  }
-
-  const wrapper = new DatabaseWrapper(sqlDb, dbPath);
-  wrapper.pragma('foreign_keys = ON');
-  wrapper.exec(CREATE_TABLES);
-  return wrapper;
+export interface SentimentCacheEntry {
+  symbol: string;
+  data: string;
+  timestamp: number;
 }
 
-export async function initDb(): Promise<void> {
-  if (!initPromise) {
-    initPromise = createDatabase();
-  }
-  db = await initPromise;
+export interface NewsCacheEntry {
+  id: string;
+  symbol: string | null;
+  headline: string;
+  summary: string | null;
+  source: string | null;
+  url: string | null;
+  imageUrl: string | null;
+  publishedAt: number;
+  relatedSymbols: string;
+  category: string | null;
+  timestamp: number;
 }
 
-export function getDatabase(): DatabaseWrapper {
+export interface WatchlistEntry {
+  id: number;
+  symbol: string;
+  name: string;
+  type: 'stock' | 'crypto';
+  coingeckoId: string | null;
+  addedAt: number;
+}
+
+export interface AlertEntry {
+  id: number;
+  symbol: string;
+  conditionType: string;
+  threshold: number;
+  enabled: boolean;
+  sound: string;
+  volume: number;
+  lastTriggered: number | null;
+  createdAt: number;
+}
+
+export interface ApiKeyEntry {
+  key: string;
+  value: string;
+}
+
+export interface AlertSettingEntry {
+  key: string;
+  value: string;
+}
+
+export interface DbSchema {
+  priceCache: PriceCacheEntry[];
+  historicalCache: HistoricalCacheEntry[];
+  sentimentCache: SentimentCacheEntry[];
+  newsCache: NewsCacheEntry[];
+  watchlist: WatchlistEntry[];
+  alerts: AlertEntry[];
+  apiKeys: ApiKeyEntry[];
+  alertSettings: AlertSettingEntry[];
+  _counters: { watchlist: number; alerts: number };
+}
+
+const defaultData: DbSchema = {
+  priceCache: [],
+  historicalCache: [],
+  sentimentCache: [],
+  newsCache: [],
+  watchlist: [],
+  alerts: [],
+  apiKeys: [],
+  alertSettings: [],
+  _counters: { watchlist: 0, alerts: 0 },
+};
+
+let db: LowSync<DbSchema> | null = null;
+
+export function initDb(): void {
+  const dbPath = path.join(app.getPath('userData'), 'market-scanner.json');
+  const dir = path.dirname(dbPath);
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+
+  const adapter = new JSONFileSync<DbSchema>(dbPath);
+  db = new LowSync<DbSchema>(adapter, defaultData);
+  db.read();
+}
+
+export function getDatabase(): LowSync<DbSchema> {
   if (!db) {
     throw new Error('Database not initialized. Call initDb() first.');
   }
@@ -143,8 +116,14 @@ export function getDatabase(): DatabaseWrapper {
 
 export function closeDatabase(): void {
   if (db) {
-    db.close();
+    db.write();
     db = null;
-    initPromise = null;
   }
+}
+
+// Helper to generate auto-increment IDs
+export function nextId(counter: 'watchlist' | 'alerts'): number {
+  const d = getDatabase();
+  d.data._counters[counter]++;
+  return d.data._counters[counter];
 }

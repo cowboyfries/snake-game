@@ -74,9 +74,9 @@ export function registerMarketHandlers(): void {
   ipcMain.handle('dashboard:getAll', async () => {
     try {
       const db = getDatabase();
-      const watchlistRows = db.prepare('SELECT * FROM watchlist ORDER BY added_at DESC').all() as Array<{
-        id: number; symbol: string; name: string; type: string; coingecko_id: string | null; added_at: number;
-      }>;
+      const watchlistRows = db.data.watchlist
+        .slice()
+        .sort((a, b) => b.addedAt - a.addedAt);
 
       const rows: DashboardRow[] = await Promise.all(
         watchlistRows.map(async (row) => {
@@ -85,8 +85,8 @@ export function registerMarketHandlers(): void {
             symbol: row.symbol,
             name: row.name,
             type: row.type as AssetType,
-            coingeckoId: row.coingecko_id || undefined,
-            addedAt: row.added_at,
+            coingeckoId: row.coingeckoId || undefined,
+            addedAt: row.addedAt,
           };
 
           const [priceResult, indicatorsResult, sentimentResult, historicalResult] = await Promise.allSettled([

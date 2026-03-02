@@ -17,88 +17,146 @@ function isValid(timestamp: number, ttl: number): boolean {
 // Price cache
 export function getCachedPrice(symbol: string, type: string): PriceData | null {
   const db = getDatabase();
-  const row = db.prepare('SELECT data, timestamp FROM price_cache WHERE symbol = ? AND type = ?').get(symbol, type) as { data: string; timestamp: number } | undefined;
-  if (!row) return null;
+  const entry = db.data.priceCache.find(e => e.symbol === symbol && e.type === type);
+  if (!entry) return null;
   const ttl = type === 'crypto' ? TTL.CRYPTO_PRICE : TTL.STOCK_PRICE;
-  if (!isValid(row.timestamp, ttl)) return null;
-  return JSON.parse(row.data);
+  if (!isValid(entry.timestamp, ttl)) return null;
+  return JSON.parse(entry.data);
 }
 
 export function setCachedPrice(symbol: string, type: string, data: PriceData): void {
   const db = getDatabase();
-  db.prepare('INSERT OR REPLACE INTO price_cache (symbol, type, data, timestamp) VALUES (?, ?, ?, ?)').run(symbol, type, JSON.stringify(data), Date.now());
+  const idx = db.data.priceCache.findIndex(e => e.symbol === symbol && e.type === type);
+  const entry = { symbol, type, data: JSON.stringify(data), timestamp: Date.now() };
+  if (idx >= 0) {
+    db.data.priceCache[idx] = entry;
+  } else {
+    db.data.priceCache.push(entry);
+  }
+  db.write();
 }
 
 // Historical cache
 export function getCachedHistorical(symbol: string, type: string, days: number): HistoricalDataPoint[] | null {
   const db = getDatabase();
-  const row = db.prepare('SELECT data, timestamp FROM historical_cache WHERE symbol = ? AND type = ? AND days = ?').get(symbol, type, days) as { data: string; timestamp: number } | undefined;
-  if (!row) return null;
-  if (!isValid(row.timestamp, TTL.HISTORICAL)) return null;
-  return JSON.parse(row.data);
+  const entry = db.data.historicalCache.find(e => e.symbol === symbol && e.type === type && e.days === days);
+  if (!entry) return null;
+  if (!isValid(entry.timestamp, TTL.HISTORICAL)) return null;
+  return JSON.parse(entry.data);
 }
 
 export function setCachedHistorical(symbol: string, type: string, days: number, data: HistoricalDataPoint[]): void {
   const db = getDatabase();
-  db.prepare('INSERT OR REPLACE INTO historical_cache (symbol, type, days, data, timestamp) VALUES (?, ?, ?, ?, ?)').run(symbol, type, days, JSON.stringify(data), Date.now());
+  const idx = db.data.historicalCache.findIndex(e => e.symbol === symbol && e.type === type && e.days === days);
+  const entry = { symbol, type, days, data: JSON.stringify(data), timestamp: Date.now() };
+  if (idx >= 0) {
+    db.data.historicalCache[idx] = entry;
+  } else {
+    db.data.historicalCache.push(entry);
+  }
+  db.write();
 }
 
 // Sentiment cache
 export function getCachedSentiment(symbol: string): SentimentData | null {
   const db = getDatabase();
-  const row = db.prepare('SELECT data, timestamp FROM sentiment_cache WHERE symbol = ?').get(symbol) as { data: string; timestamp: number } | undefined;
-  if (!row) return null;
-  if (!isValid(row.timestamp, TTL.SENTIMENT)) return null;
-  return JSON.parse(row.data);
+  const entry = db.data.sentimentCache.find(e => e.symbol === symbol);
+  if (!entry) return null;
+  if (!isValid(entry.timestamp, TTL.SENTIMENT)) return null;
+  return JSON.parse(entry.data);
 }
 
 export function setCachedSentiment(symbol: string, data: SentimentData): void {
   const db = getDatabase();
-  db.prepare('INSERT OR REPLACE INTO sentiment_cache (symbol, data, timestamp) VALUES (?, ?, ?)').run(symbol, JSON.stringify(data), Date.now());
+  const idx = db.data.sentimentCache.findIndex(e => e.symbol === symbol);
+  const entry = { symbol, data: JSON.stringify(data), timestamp: Date.now() };
+  if (idx >= 0) {
+    db.data.sentimentCache[idx] = entry;
+  } else {
+    db.data.sentimentCache.push(entry);
+  }
+  db.write();
 }
 
 // News cache
 export function getCachedNews(symbol: string | null): NewsArticle[] | null {
   const db = getDatabase();
   const key = symbol || '__general__';
-  let rows: { data: string; timestamp: number }[];
 
+  let entries: typeof db.data.newsCache;
   if (symbol) {
-    rows = db.prepare('SELECT data, timestamp FROM news_cache WHERE symbol = ? ORDER BY published_at DESC LIMIT 20').all(symbol) as { data: string; timestamp: number }[];
+    entries = db.data.newsCache
+      .filter(e => e.symbol === symbol)
+      .sort((a, b) => b.publishedAt - a.publishedAt)
+      .slice(0, 20);
   } else {
-    rows = db.prepare('SELECT data, timestamp FROM news_cache WHERE symbol IS NULL OR symbol = ? ORDER BY published_at DESC LIMIT 30').all('__general__') as { data: string; timestamp: number }[];
+    entries = db.data.newsCache
+      .filter(e => e.symbol === null || e.symbol === '__general__')
+      .sort((a, b) => b.publishedAt - a.publishedAt)
+      .slice(0, 30);
   }
 
-  if (rows.length === 0) return null;
-  if (!isValid(rows[0].timestamp, TTL.NEWS)) return null;
-  return rows.map(r => JSON.parse(r.data));
+  if (entries.length === 0) return null;
+  if (!isValid(entries[0].timestamp, TTL.NEWS)) return null;
+
+  return entries.map(e => ({
+    id: e.id,
+    headline: e.headline,
+    summary: e.summary || '',
+    source: e.source || '',
+    url: e.url || '',
+    imageUrl: e.imageUrl || undefined,
+    publishedAt: e.publishedAt,
+    relatedSymbols: JSON.parse(e.relatedSymbols),
+    category: e.category || '',
+  }));
 }
 
 export function setCachedNews(articles: NewsArticle[], symbol: string | null): void {
   const db = getDatabase();
-  const insert = db.prepare('INSERT OR REPLACE INTO news_cache (id, symbol, headline, summary, source, url, image_url, published_at, related_symbols, category, timestamp) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)');
-  const now = Date.now();
   const s = symbol || '__general__';
+  const now = Date.now();
 
-  const transaction = db.transaction(() => {
-    for (const article of articles) {
-      insert.run(article.id, s, article.headline, article.summary, article.source, article.url, article.imageUrl || null, article.publishedAt, JSON.stringify(article.relatedSymbols), article.category, now);
+  for (const article of articles) {
+    const idx = db.data.newsCache.findIndex(e => e.id === article.id);
+    const entry = {
+      id: article.id,
+      symbol: s,
+      headline: article.headline,
+      summary: article.summary,
+      source: article.source,
+      url: article.url,
+      imageUrl: article.imageUrl || null,
+      publishedAt: article.publishedAt,
+      relatedSymbols: JSON.stringify(article.relatedSymbols),
+      category: article.category,
+      timestamp: now,
+    };
+    if (idx >= 0) {
+      db.data.newsCache[idx] = entry;
+    } else {
+      db.data.newsCache.push(entry);
     }
-  });
-  transaction();
+  }
+  db.write();
 }
 
 // Cleanup
 export function cleanExpiredCache(): void {
   const db = getDatabase();
   const now = Date.now();
-  db.prepare('DELETE FROM price_cache WHERE (timestamp + ?) < ?').run(TTL.STOCK_PRICE, now);
-  db.prepare('DELETE FROM historical_cache WHERE (timestamp + ?) < ?').run(TTL.HISTORICAL, now);
-  db.prepare('DELETE FROM sentiment_cache WHERE (timestamp + ?) < ?').run(TTL.SENTIMENT, now);
-  db.prepare('DELETE FROM news_cache WHERE (timestamp + ?) < ?').run(TTL.NEWS, now);
+  db.data.priceCache = db.data.priceCache.filter(e => isValid(e.timestamp, TTL.STOCK_PRICE));
+  db.data.historicalCache = db.data.historicalCache.filter(e => isValid(e.timestamp, TTL.HISTORICAL));
+  db.data.sentimentCache = db.data.sentimentCache.filter(e => isValid(e.timestamp, TTL.SENTIMENT));
+  db.data.newsCache = db.data.newsCache.filter(e => isValid(e.timestamp, TTL.NEWS));
+  db.write();
 }
 
 export function clearAllCache(): void {
   const db = getDatabase();
-  db.exec('DELETE FROM price_cache; DELETE FROM historical_cache; DELETE FROM sentiment_cache; DELETE FROM news_cache;');
+  db.data.priceCache = [];
+  db.data.historicalCache = [];
+  db.data.sentimentCache = [];
+  db.data.newsCache = [];
+  db.write();
 }

@@ -21,8 +21,8 @@ const limiter = new RateLimiter(50, 60000);
 
 function getApiKey(): string | null {
   const db = getDatabase();
-  const row = db.prepare('SELECT value FROM api_keys WHERE key = ?').get('finnhubApiKey') as { value: string } | undefined;
-  return row?.value || null;
+  const entry = db.data.apiKeys.find(e => e.key === 'finnhubApiKey');
+  return entry?.value || null;
 }
 
 interface FinnhubNewsItem {

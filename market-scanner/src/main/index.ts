@@ -55,9 +55,7 @@ async function pushPriceUpdates(): Promise<void> {
 
   try {
     const db = getDatabase();
-    const watchlistRows = db.prepare('SELECT symbol, type, coingecko_id FROM watchlist').all() as Array<{
-      symbol: string; type: string; coingecko_id: string | null;
-    }>;
+    const watchlistRows = db.data.watchlist;
 
     if (watchlistRows.length === 0) return;
 
@@ -67,7 +65,7 @@ async function pushPriceUpdates(): Promise<void> {
     const prices = [];
 
     if (cryptoItems.length > 0) {
-      const ids = cryptoItems.map(r => r.coingecko_id || r.symbol.toLowerCase());
+      const ids = cryptoItems.map(r => r.coingeckoId || r.symbol.toLowerCase());
       try {
         const cryptoPrices = await getCryptoPrices(ids);
         prices.push(...cryptoPrices);
@@ -88,8 +86,8 @@ async function pushPriceUpdates(): Promise<void> {
 }
 
 app.whenReady().then(async () => {
-  // Initialize database (async for sql.js WASM loading)
-  await initDb();
+  // Initialize database (lowdb JSON file)
+  initDb();
 
   // Register all IPC handlers
   registerMarketHandlers();

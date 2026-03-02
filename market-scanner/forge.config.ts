@@ -10,7 +10,7 @@ import { FuseV1Options, FuseVersion } from '@electron/fuses';
 const config: ForgeConfig = {
   packagerConfig: {
     asar: {
-      unpack: '*.{node,dll,wasm}',
+      unpack: '*.{node,dll}',
     },
     icon: './src/assets/icon',
     name: 'MarketScanner',

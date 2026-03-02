@@ -1,27 +1,25 @@
 import { ipcMain } from 'electron';
-import { getDatabase } from '../db/database';
+import { getDatabase, nextId } from '../db/database';
 import type { Alert, AlertSettings, AlertSound } from '../../shared/types';
 
 export function registerAlertHandlers(): void {
   ipcMain.handle('alerts:getAll', async () => {
     try {
       const db = getDatabase();
-      const rows = db.prepare('SELECT * FROM alerts ORDER BY created_at DESC').all() as Array<{
-        id: number; symbol: string; condition_type: string; threshold: number;
-        enabled: number; sound: string; volume: number; last_triggered: number | null; created_at: number;
-      }>;
-
-      return rows.map(row => ({
-        id: row.id,
-        symbol: row.symbol,
-        conditionType: row.condition_type,
-        threshold: row.threshold,
-        enabled: row.enabled === 1,
-        sound: row.sound,
-        volume: row.volume,
-        lastTriggered: row.last_triggered,
-        createdAt: row.created_at,
-      })) as Alert[];
+      return db.data.alerts
+        .slice()
+        .sort((a, b) => b.createdAt - a.createdAt)
+        .map(row => ({
+          id: row.id,
+          symbol: row.symbol,
+          conditionType: row.conditionType,
+          threshold: row.threshold,
+          enabled: row.enabled,
+          sound: row.sound,
+          volume: row.volume,
+          lastTriggered: row.lastTriggered,
+          createdAt: row.createdAt,
+        })) as Alert[];
     } catch (err) {
       throw new Error(`Failed to get alerts: ${(err as Error).message}`);
     }
@@ -34,18 +32,31 @@ export function registerAlertHandlers(): void {
     try {
       const db = getDatabase();
       const now = Date.now();
-      const result = db.prepare(
-        'INSERT INTO alerts (symbol, condition_type, threshold, enabled, sound, volume, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)'
-      ).run(alert.symbol.toUpperCase(), alert.conditionType, alert.threshold, alert.enabled ? 1 : 0, alert.sound, alert.volume, now);
+      const id = nextId('alerts');
 
-      return {
-        id: result.lastInsertRowid as number,
+      const entry = {
+        id,
         symbol: alert.symbol.toUpperCase(),
         conditionType: alert.conditionType,
         threshold: alert.threshold,
         enabled: alert.enabled,
         sound: alert.sound,
         volume: alert.volume,
+        lastTriggered: null as number | null,
+        createdAt: now,
+      };
+
+      db.data.alerts.push(entry);
+      db.write();
+
+      return {
+        id: entry.id,
+        symbol: entry.symbol,
+        conditionType: entry.conditionType,
+        threshold: entry.threshold,
+        enabled: entry.enabled,
+        sound: entry.sound,
+        volume: entry.volume,
         lastTriggered: null,
         createdAt: now,
       } as Alert;
@@ -57,35 +68,28 @@ export function registerAlertHandlers(): void {
   ipcMain.handle('alerts:update', async (_event, id: number, updates: Partial<Alert>) => {
     try {
       const db = getDatabase();
-      const sets: string[] = [];
-      const values: (string | number)[] = [];
+      const idx = db.data.alerts.findIndex(a => a.id === id);
+      if (idx < 0) throw new Error('Alert not found');
 
-      if (updates.enabled !== undefined) { sets.push('enabled = ?'); values.push(updates.enabled ? 1 : 0); }
-      if (updates.threshold !== undefined) { sets.push('threshold = ?'); values.push(updates.threshold); }
-      if (updates.conditionType !== undefined) { sets.push('condition_type = ?'); values.push(updates.conditionType); }
-      if (updates.sound !== undefined) { sets.push('sound = ?'); values.push(updates.sound); }
-      if (updates.volume !== undefined) { sets.push('volume = ?'); values.push(updates.volume); }
+      const row = db.data.alerts[idx];
+      if (updates.enabled !== undefined) row.enabled = updates.enabled;
+      if (updates.threshold !== undefined) row.threshold = updates.threshold;
+      if (updates.conditionType !== undefined) row.conditionType = updates.conditionType;
+      if (updates.sound !== undefined) row.sound = updates.sound;
+      if (updates.volume !== undefined) row.volume = updates.volume;
 
-      if (sets.length === 0) throw new Error('No updates provided');
-
-      values.push(id);
-      db.prepare(`UPDATE alerts SET ${sets.join(', ')} WHERE id = ?`).run(...values);
-
-      const row = db.prepare('SELECT * FROM alerts WHERE id = ?').get(id) as {
-        id: number; symbol: string; condition_type: string; threshold: number;
-        enabled: number; sound: string; volume: number; last_triggered: number | null; created_at: number;
-      };
+      db.write();
 
       return {
         id: row.id,
         symbol: row.symbol,
-        conditionType: row.condition_type,
+        conditionType: row.conditionType,
         threshold: row.threshold,
-        enabled: row.enabled === 1,
+        enabled: row.enabled,
         sound: row.sound,
         volume: row.volume,
-        lastTriggered: row.last_triggered,
-        createdAt: row.created_at,
+        lastTriggered: row.lastTriggered,
+        createdAt: row.createdAt,
       } as Alert;
     } catch (err) {
       throw new Error(`Failed to update alert: ${(err as Error).message}`);
@@ -95,7 +99,11 @@ export function registerAlertHandlers(): void {
   ipcMain.handle('alerts:delete', async (_event, id: number) => {
     try {
       const db = getDatabase();
-      db.prepare('DELETE FROM alerts WHERE id = ?').run(id);
+      const idx = db.data.alerts.findIndex(a => a.id === id);
+      if (idx >= 0) {
+        db.data.alerts.splice(idx, 1);
+        db.write();
+      }
     } catch (err) {
       throw new Error(`Failed to delete alert: ${(err as Error).message}`);
     }
@@ -104,8 +112,7 @@ export function registerAlertHandlers(): void {
   ipcMain.handle('alerts:getSettings', async () => {
     try {
       const db = getDatabase();
-      const rows = db.prepare('SELECT key, value FROM alert_settings').all() as { key: string; value: string }[];
-      const map = new Map(rows.map(r => [r.key, r.value]));
+      const map = new Map(db.data.alertSettings.map(r => [r.key, r.value]));
 
       return {
         soundEnabled: map.get('sound_enabled') !== 'false',
@@ -122,20 +129,26 @@ export function registerAlertHandlers(): void {
   ipcMain.handle('alerts:updateSettings', async (_event, settings: Partial<AlertSettings>) => {
     try {
       const db = getDatabase();
-      const upsert = db.prepare('INSERT OR REPLACE INTO alert_settings (key, value) VALUES (?, ?)');
 
-      const transaction = db.transaction(() => {
-        if (settings.soundEnabled !== undefined) upsert.run('sound_enabled', String(settings.soundEnabled));
-        if (settings.defaultVolume !== undefined) upsert.run('default_volume', String(settings.defaultVolume));
-        if (settings.defaultSound !== undefined) upsert.run('default_sound', settings.defaultSound);
-        if (settings.quietHoursStart !== undefined) upsert.run('quiet_hours_start', settings.quietHoursStart || '');
-        if (settings.quietHoursEnd !== undefined) upsert.run('quiet_hours_end', settings.quietHoursEnd || '');
-      });
-      transaction();
+      function upsert(key: string, value: string) {
+        const idx = db.data.alertSettings.findIndex(e => e.key === key);
+        if (idx >= 0) {
+          db.data.alertSettings[idx].value = value;
+        } else {
+          db.data.alertSettings.push({ key, value });
+        }
+      }
+
+      if (settings.soundEnabled !== undefined) upsert('sound_enabled', String(settings.soundEnabled));
+      if (settings.defaultVolume !== undefined) upsert('default_volume', String(settings.defaultVolume));
+      if (settings.defaultSound !== undefined) upsert('default_sound', settings.defaultSound);
+      if (settings.quietHoursStart !== undefined) upsert('quiet_hours_start', settings.quietHoursStart || '');
+      if (settings.quietHoursEnd !== undefined) upsert('quiet_hours_end', settings.quietHoursEnd || '');
+
+      db.write();
 
       // Return updated settings
-      const rows = db.prepare('SELECT key, value FROM alert_settings').all() as { key: string; value: string }[];
-      const map = new Map(rows.map(r => [r.key, r.value]));
+      const map = new Map(db.data.alertSettings.map(r => [r.key, r.value]));
 
       return {
         soundEnabled: map.get('sound_enabled') !== 'false',
@@ -152,7 +165,13 @@ export function registerAlertHandlers(): void {
   ipcMain.handle('settings:setApiKey', async (_event, key: string, value: string) => {
     try {
       const db = getDatabase();
-      db.prepare('INSERT OR REPLACE INTO api_keys (key, value) VALUES (?, ?)').run(key, value);
+      const idx = db.data.apiKeys.findIndex(e => e.key === key);
+      if (idx >= 0) {
+        db.data.apiKeys[idx].value = value;
+      } else {
+        db.data.apiKeys.push({ key, value });
+      }
+      db.write();
     } catch (err) {
       throw new Error(`Failed to set API key: ${(err as Error).message}`);
     }
@@ -161,9 +180,8 @@ export function registerAlertHandlers(): void {
   ipcMain.handle('settings:getApiKeys', async () => {
     try {
       const db = getDatabase();
-      const rows = db.prepare('SELECT key, value FROM api_keys').all() as { key: string; value: string }[];
       const keys: Record<string, string> = {};
-      for (const row of rows) {
+      for (const row of db.data.apiKeys) {
         keys[row.key] = row.value;
       }
       return {

@@ -13,8 +13,7 @@ let checkInterval: ReturnType<typeof setInterval> | null = null;
 
 function getAlertSettings(): AlertSettings {
   const db = getDatabase();
-  const rows = db.prepare('SELECT key, value FROM alert_settings').all() as { key: string; value: string }[];
-  const map = new Map(rows.map(r => [r.key, r.value]));
+  const map = new Map(db.data.alertSettings.map(r => [r.key, r.value]));
 
   return {
     soundEnabled: map.get('sound_enabled') !== 'false',
@@ -46,9 +45,9 @@ function isQuietHours(settings: AlertSettings): boolean {
 
 function getWatchlistItemType(symbol: string): { type: 'stock' | 'crypto'; coingeckoId?: string } {
   const db = getDatabase();
-  const row = db.prepare('SELECT type, coingecko_id FROM watchlist WHERE symbol = ?').get(symbol) as { type: string; coingecko_id: string | null } | undefined;
-  if (row) {
-    return { type: row.type as 'stock' | 'crypto', coingeckoId: row.coingecko_id || undefined };
+  const item = db.data.watchlist.find(w => w.symbol === symbol);
+  if (item) {
+    return { type: item.type, coingeckoId: item.coingeckoId || undefined };
   }
   // Default to stock if not in watchlist
   return { type: 'stock' };
@@ -142,32 +141,33 @@ async function checkAlert(alert: Alert): Promise<AlertEvent | null> {
 
 async function runAlertCheck(): Promise<void> {
   const db = getDatabase();
-  const alerts = db.prepare('SELECT * FROM alerts WHERE enabled = 1').all() as Array<{
-    id: number; symbol: string; condition_type: string; threshold: number;
-    enabled: number; sound: string; volume: number; last_triggered: number | null; created_at: number;
-  }>;
+  const enabledAlerts = db.data.alerts.filter(a => a.enabled);
 
   const settings = getAlertSettings();
   const quiet = isQuietHours(settings);
 
-  for (const row of alerts) {
+  for (const row of enabledAlerts) {
     const alert: Alert = {
       id: row.id,
       symbol: row.symbol,
-      conditionType: row.condition_type as Alert['conditionType'],
+      conditionType: row.conditionType as Alert['conditionType'],
       threshold: row.threshold,
       enabled: true,
       sound: row.sound as AlertSound,
       volume: row.volume,
-      lastTriggered: row.last_triggered,
-      createdAt: row.created_at,
+      lastTriggered: row.lastTriggered,
+      createdAt: row.createdAt,
     };
 
     const event = await checkAlert(alert);
     if (!event) continue;
 
     // Update last_triggered
-    db.prepare('UPDATE alerts SET last_triggered = ? WHERE id = ?').run(event.triggeredAt, alert.id);
+    const idx = db.data.alerts.findIndex(a => a.id === alert.id);
+    if (idx >= 0) {
+      db.data.alerts[idx].lastTriggered = event.triggeredAt;
+      db.write();
+    }
 
     // Show native notification
     if (Notification.isSupported()) {

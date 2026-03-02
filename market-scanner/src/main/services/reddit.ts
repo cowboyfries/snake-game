@@ -22,8 +22,8 @@ let tokenExpiry = 0;
 
 function getCredentials(): { clientId: string; clientSecret: string } | null {
   const db = getDatabase();
-  const id = db.prepare('SELECT value FROM api_keys WHERE key = ?').get('redditClientId') as { value: string } | undefined;
-  const secret = db.prepare('SELECT value FROM api_keys WHERE key = ?').get('redditClientSecret') as { value: string } | undefined;
+  const id = db.data.apiKeys.find(e => e.key === 'redditClientId');
+  const secret = db.data.apiKeys.find(e => e.key === 'redditClientSecret');
   if (!id || !secret) return null;
   return { clientId: id.value, clientSecret: secret.value };
 }
